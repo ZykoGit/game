@@ -9,9 +9,13 @@ import { playSequence, lerpCamera } from './cutscenes.js';
 import { createUI } from './ui.js';
 import { createInteractionSystem } from './interactions.js';
 import { SETTINGS } from './settings.js';
+import { initErrorOverlay, reportError } from './error-overlay.js';
 
 async function boot() {
   try {
+    // init error overlay first so any errors are captured
+    initErrorOverlay();
+
     const canvas = document.getElementById('c');
     const startBtn = document.getElementById('startBtn');
     const overlay = document.getElementById('overlay');
@@ -32,56 +36,62 @@ async function boot() {
     let loopHandle = null;
     let currentMap = null;
 
-    // helper functions (same as before, trimmed for brevity)
+    // helper functions
     function spawnMonstersFromMap(map) {
-      monsters.forEach(m => { if (m.mesh && m.scene) m.scene.remove(m.mesh); });
-      monsters = [];
-      const tile = map.tileSize || SETTINGS.tileSize;
-      const rows = map.rows || [];
-      for (const [type, list] of Object.entries(map.spawns || {})) {
-        for (const s of list) {
-          const x = (s.x - (rows[0]?.length || 0) / 2) * tile;
-          const z = (s.y - (rows.length || 0) / 2) * tile;
-          if (type === 'HIDER') monsters.push(new Hider(scene, x, z));
-          if (type === 'JUMPER') monsters.push(new Jumper(scene, x, z));
-          if (type === 'STARE') monsters.push(new Stare(scene, x, z));
-          if (type === 'PET') {
-            const pet = new Pet(scene, x, z);
-            monsters.push(pet);
-            interactions.register({
-              id: s.id || `pet-${x}-${z}`,
-              position: pet.mesh.position.clone(),
-              range: 2.0,
-              onInteract: () => {
-                playerObj.state.petMeter = Math.min(100, playerObj.state.petMeter + 30);
-                ui.showMessage('You pet the creature. It purrs.', 1500);
-              }
-            });
+      try {
+        monsters.forEach(m => { if (m.mesh && m.scene) m.scene.remove(m.mesh); });
+        monsters = [];
+        const tile = map.tileSize || SETTINGS.tileSize;
+        const rows = map.rows || [];
+        for (const [type, list] of Object.entries(map.spawns || {})) {
+          for (const s of list) {
+            const x = (s.x - (rows[0]?.length || 0) / 2) * tile;
+            const z = (s.y - (rows.length || 0) / 2) * tile;
+            if (type === 'HIDER') monsters.push(new Hider(scene, x, z));
+            if (type === 'JUMPER') monsters.push(new Jumper(scene, x, z));
+            if (type === 'STARE') monsters.push(new Stare(scene, x, z));
+            if (type === 'PET') {
+              const pet = new Pet(scene, x, z);
+              monsters.push(pet);
+              interactions.register({
+                id: s.id || `pet-${x}-${z}`,
+                position: pet.mesh.position.clone(),
+                range: 2.0,
+                onInteract: () => {
+                  playerObj.state.petMeter = Math.min(100, playerObj.state.petMeter + 30);
+                  ui.showMessage('You pet the creature. It purrs.', 1500);
+                }
+              });
+            }
           }
         }
+      } catch (e) {
+        reportError(`spawnMonstersFromMap error: ${e.stack || e}`, 'error');
       }
     }
 
     function onJumpscareStart({ orientation }) {
-      if (!triggers) return;
-      triggers.endJumpscare = () => {}; // defensive
-      ui.showMessage('Something moves in the dark...', 1200);
-      try { audio.playJumpscare(); } catch (e) { console.warn('Audio play failed', e); }
-      // quick camera nudge
-      const originalPos = camera.position.clone();
-      const forward = new THREE.Vector3(0, 0, -0.6).applyQuaternion(camera.quaternion);
-      const scarePos = originalPos.clone().add(forward);
-      lerpCamera(camera, { position: originalPos, quaternion: camera.quaternion.clone() }, { position: scarePos, quaternion: camera.quaternion.clone() }, 0.12, () => {
-        lerpCamera(camera, { position: scarePos, quaternion: camera.quaternion.clone() }, { position: originalPos, quaternion: camera.quaternion.clone() }, 0.18, () => {
-          if (triggers && typeof triggers.endJumpscare === 'function') triggers.endJumpscare();
-        });
-      });
-      // spawn a jumper safely
       try {
+        if (!triggers) return;
+        // show message and play audio
+        ui.showMessage('Something moves in the dark...', 1200);
+        try { audio.playJumpscare(); } catch (e) { reportError('Audio playJumpscare failed: ' + (e.stack || e), 'warn'); }
+        // camera nudge
+        const originalPos = camera.position.clone();
+        const forward = new THREE.Vector3(0, 0, -0.6).applyQuaternion(camera.quaternion);
+        const scarePos = originalPos.clone().add(forward);
+        lerpCamera(camera, { position: originalPos, quaternion: camera.quaternion.clone() }, { position: scarePos, quaternion: camera.quaternion.clone() }, 0.12, () => {
+          lerpCamera(camera, { position: scarePos, quaternion: camera.quaternion.clone() }, { position: originalPos, quaternion: camera.quaternion.clone() }, 0.18, () => {
+            if (triggers && typeof triggers.endJumpscare === 'function') triggers.endJumpscare();
+          });
+        });
+        // spawn jumper
         const j = new Jumper(scene, camera.position.x + (Math.random() - 0.5) * 2, camera.position.z - 2.2);
         monsters.push(j);
-        j.startChase({ camera, state: playerObj.state });
-      } catch (e) { console.warn('Failed to spawn jumper', e); }
+        if (typeof j.startChase === 'function') j.startChase({ camera, state: playerObj.state });
+      } catch (e) {
+        reportError('onJumpscareStart error: ' + (e.stack || e), 'error');
+      }
     }
 
     async function setupLevel(mapUrl = 'maps/map-editor-sample.json') {
@@ -109,8 +119,7 @@ async function boot() {
         }
         return map;
       } catch (err) {
-        console.error('setupLevel failed:', err);
-        ui.showMessage('Failed to load level. Check console/network.', 4000);
+        reportError('setupLevel failed: ' + (err.stack || err), 'error');
         throw err;
       }
     }
@@ -125,7 +134,7 @@ async function boot() {
         try {
           playerObj.update(dt);
           if (triggers) triggers.update(dt, camera.position.clone());
-          for (const m of monsters) { try { m.update(dt, { camera, state: playerObj.state, audio }); } catch (e) { console.warn(e); } }
+          for (const m of monsters) { try { m.update(dt, { camera, state: playerObj.state, audio }); } catch (e) { reportError('monster update error: ' + (e.stack || e), 'warn'); } }
           renderer.render(scene, camera);
           // win check
           if (currentMap) {
@@ -144,7 +153,7 @@ async function boot() {
           }
           if (playerObj.state.health <= 0) { running = false; window.location.href = 'you-win.html?dead=1'; return; }
         } catch (err) {
-          console.error('Game loop error:', err);
+          reportError('Game loop error: ' + (err.stack || err), 'error');
           running = false;
         }
         loopHandle = requestAnimationFrame(loop);
@@ -154,7 +163,7 @@ async function boot() {
 
     async function startSequence() {
       startBtn.disabled = true;
-      try { if (audio && audio.ctx && audio.ctx.state === 'suspended') await audio.ctx.resume(); } catch (e) { console.warn('Audio resume failed', e); }
+      try { if (audio && audio.ctx && audio.ctx.state === 'suspended') await audio.ctx.resume(); } catch (e) { reportError('Audio resume failed: ' + (e.stack || e), 'warn'); }
       if (overlay) overlay.style.display = 'none';
       await setupLevel('maps/map-editor-sample.json');
 
@@ -173,7 +182,6 @@ async function boot() {
         controls.addEventListener('unlock', onUnlock);
         try {
           controls.lock();
-          // fallback start if lock not granted quickly
           setTimeout(() => {
             if (!pointerLocked && !running) {
               controls.removeEventListener('lock', onLock);
@@ -182,7 +190,7 @@ async function boot() {
             }
           }, 900);
         } catch (e) {
-          console.warn('Pointer lock request failed:', e);
+          reportError('Pointer lock request failed: ' + (e.stack || e), 'warn');
           controls.removeEventListener('lock', onLock);
           controls.removeEventListener('unlock', onUnlock);
           startGameLoop();
@@ -198,23 +206,26 @@ async function boot() {
         console.log('Start button clicked');
         await startSequence();
       } catch (err) {
-        console.error('startSequence error:', err);
+        reportError('startSequence error: ' + (err.stack || err), 'error');
         startBtn.disabled = false;
       }
     });
 
-    // helpful debug: show console hint if nothing happens
-    console.log('Game initialized. Click Start to begin. If nothing happens, open DevTools Console.');
+    console.log('Game initialized. Click Start to begin. If nothing happens, open the Debug Chat.');
 
     // resize
     window.addEventListener('resize', () => resizeHandler(renderer, camera));
 
-    // expose for debugging
+    // wire player-interact to interactions system
+    window.addEventListener('player-interact', (e) => { e.detail.playerPos = camera.position.clone(); });
+
+    // expose debug helpers
     window.__lostInStatic = { startSequence, setupLevel, getState: () => ({ running, monstersCount: monsters.length }) };
 
   } catch (err) {
-    console.error('Boot failed:', err);
-    alert('Initialization error. See console for details.');
+    // fatal boot error
+    try { reportError('Boot failed: ' + (err.stack || err), 'error'); } catch (e) { console.error('Boot failed and overlay unavailable', e); }
+    alert('Initialization error. See Debug Chat (top-left) for details.');
   }
 }
 
