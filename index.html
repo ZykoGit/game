@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>Lost In The Static</title>
@@ -10,14 +10,17 @@
 </head>
 <body>
   <div id="overlay">
-    <div id="title">- Lost In The Static -</div>
+    <div id="title">Lost In The Static</div>
     <button id="startBtn">Start</button>
     <div id="hud" hidden>
       <div id="health">Health: <span>100</span></div>
       <div id="petMeter">Pet: <span>100</span></div>
     </div>
   </div>
+
   <canvas id="c"></canvas>
+
+  <!-- main module loaded at end so DOM exists; main.js also guards with DOMContentLoaded -->
   <script type="module" src="src/main.js"></script>
 </body>
 </html>
